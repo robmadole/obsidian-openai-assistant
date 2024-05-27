@@ -1,0 +1,10 @@
+{
+	"id": "openai-assistant",
+	"name": "OpenAI Assistant",
+	"version": "1.0.0",
+	"minAppVersion": "0.15.0",
+	"description": "Uses an OpenAI Assistant to understand your Obsidian documents and provide a ChatGPT interface from them.",
+	"author": "Rob Madole",
+	"authorUrl": "https://robmadole.com",
+	"isDesktopOnly": false
+}
