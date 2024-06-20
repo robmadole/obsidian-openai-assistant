@@ -7,6 +7,7 @@ import { VaultProvider, VaultFile } from './vault'
 
 const VECTOR_STORE_NAME = 'Obsidian OpenAI Assistant'
 const ASSISTANT_NAME = 'Obsidian OpenAI Assistant'
+const LOW_PASS_THRESHOLD = 5
 
 export interface SyncFilesOptions {
   openai: OpenAI,
@@ -73,7 +74,7 @@ export class SyncFiles {
       if (!remoteFile) {
         await this.addRemoteFile(vaultFile)
 
-        yield vaultFile
+        yield vaultFile.path
       }
     }
   }
@@ -119,6 +120,11 @@ export class SyncFiles {
       assistant = await this.openai.beta.assistants.create({
         name: ASSISTANT_NAME,
         tools: [{ type: 'file_search' }],
+        tool_resources: {
+          file_search: {
+            vector_store_ids: [vectorStore.id]
+          }
+        },
         model: 'gpt-4o'
       });
     }
@@ -155,10 +161,19 @@ export class SyncFiles {
     }, [])
 
     if (this.vectorStore) {
-      return this.openai.beta.vectorStores.fileBatches.create(
-        this.vectorStore.id,
-        { file_ids: fileIds }
-      )
+      if (fileIds.length < LOW_PASS_THRESHOLD) {
+        Promise.all(fileIds.map(fileId => {
+          return this.openai.beta.vectorStores.fileBatches.create(
+            this.vectorStore.id,
+            { file_ids: [fileId] }
+          )
+        }))
+      } else {
+        return this.openai.beta.vectorStores.fileBatches.create(
+          this.vectorStore.id,
+          { file_ids: fileIds }
+        )
+      }
     } else {
       throw new Error('Vector store has not been initialized')
     }
@@ -216,11 +231,13 @@ export class SyncFiles {
     return true
   }
 
-  async deleteRemoteFiles (): Promise<boolean> {
+  async *deleteRemoteFiles () {
     const files = await this.listRemoteFiles()
 
     for (const file of files) {
       await this.openai.files.del(file.id)
+
+      yield file.filename
     }
 
     return true

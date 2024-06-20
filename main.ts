@@ -1,86 +1,52 @@
 import OpenAI from 'openai'
 import { SyncFiles } from 'src/sync'
 import { VaultReader } from 'src/vault'
-import { App, Plugin, Modal, PluginSettingTab, Setting } from 'obsidian'
-import ProcessingFilesModal from 'src/components/ProcessingFilesModal.svelte'
+import { Plugin, WorkspaceLeaf } from 'obsidian'
+import type { PluginSettings }  from 'src/settings'
+import { SettingsTab, DEFAULT_SETTINGS } from 'src/settings'
+import { FileStatusModal } from 'src/modals/FileStatusModal'
+import { ChatView, VIEW_TYPE_CHATVIEW } from 'src/views/ChatView'
+import { registerFileSyncToVault } from 'src/events/file-sync'
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
-
-interface PluginSettings {
-	openAiApiKey: string;
-}
-
-const DEFAULT_SETTINGS: PluginSettings = {
-	openAiApiKey: ''
-}
-
-export class LoadingModal extends Modal {
-  component: ProcessingFilesModal
-
-  constructor(app: App) {
-    super(app);
-  }
-
-  onOpen() {
-    this.component = new ProcessingFilesModal({
-      target: this.contentEl,
-      props: {
-        heading: 'Syncing files',
-        filename: null
-      }
-    });
-  }
-
-  onClose() {
-    this.component.$destroy()
-  }
-
-  nowProcessing(filename) {
-    this.component.$set({ filename: filename })
-  }
-}
+import 'src/icons'
 
 export default class AssistantPlugin extends Plugin {
 	settings: PluginSettings;
 
+  openai: OpenAI;
+
+  syncFiles: SyncFiles;
+
 	async onload() {
 		await this.loadSettings();
 
-    const openai = new OpenAI({ apiKey: this.settings.openAiApiKey, dangerouslyAllowBrowser: true })
-    const vaultReader = new VaultReader(this.app.vault)
+    this.registerView(
+      VIEW_TYPE_CHATVIEW,
+      (leaf) => new ChatView(leaf, this)
+    )
 
-    const syncFiles = new SyncFiles({ openai, vaultReader })
+    this.addRibbonIcon('obsidian-openai-plugin-fa-brain', 'OpenAI Assistant', () => {
+      this.activateChatView();
+    });
 
-    const loadingModal = new LoadingModal(this.app)
+    this.openai = new OpenAI({ apiKey: this.settings.openAiApiKey, dangerouslyAllowBrowser: true })
+
+    this.syncFiles = new SyncFiles({
+      openai: this.openai,
+      vaultReader: new VaultReader(this.app.vault),
+      addToVectorStoreInterval: 5000
+    })
 
 		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SettingTab(this.app, this));
+		this.addSettingTab(new SettingsTab(this.app, this));
 
-    this.addCommand({
-      id: 'sync-files',
-      name: 'Sync Files',
-      callback: async () => {
-        try {
-          loadingModal.open()
+    this.addPluginCommands()
 
-          for await (const file of syncFiles.sync()) {
-            loadingModal.nowProcessing(file.path)
-          }
-        } finally {
-          loadingModal.close()
-        }
-      }
+    this.app.workspace.onLayoutReady(() => {
+      // Since this is listening to the "create" event, we wait until the onLayoutReady()
+      // so that every file added to the vault doesn't trigger an upload to OpenAI's API
+      registerFileSyncToVault({ plugin: this, vault: this.app.vault, syncFiles: this.syncFiles })
     })
-
-    this.addCommand({
-      id: 'delete-files',
-      name: 'Delete Files',
-      callback: () => {
-        syncFiles.deleteRemoteFiles()
-      }
-    })
-
-    // this.app.vault.on('create',
 	}
 
 	async loadSettings() {
@@ -90,30 +56,67 @@ export default class AssistantPlugin extends Plugin {
 	async saveSettings() {
 		await this.saveData(this.settings);
 	}
-}
 
-class SettingTab extends PluginSettingTab {
-	plugin: AssistantPlugin;
+  async activateChatView() {
+    const { workspace } = this.app
 
-	constructor(app: App, plugin: AssistantPlugin) {
-		super(app, plugin);
-		this.plugin = plugin;
-	}
+    let leaf: WorkspaceLeaf | null
 
-	display(): void {
-		const {containerEl} = this;
+    const leaves = workspace.getLeavesOfType(VIEW_TYPE_CHATVIEW)
 
-		containerEl.empty();
+    if (leaves.length > 0) {
+      leaf = leaves[0]
+    } else {
+      leaf = workspace.getLeaf()
+      if (leaf) {
+        await leaf.setViewState({ type: VIEW_TYPE_CHATVIEW, active: true })
+      }
+    }
 
-		new Setting(containerEl)
-			.setName('Open AI API Key')
-			.setDesc('Go to https://platform.openai.com to create a new API key.')
-			.addText(text => text
-				.setPlaceholder('')
-				.setValue(this.plugin.settings.openAiApiKey)
-				.onChange(async (value) => {
-					this.plugin.settings.openAiApiKey = value;
-					await this.plugin.saveSettings();
-				}));
-	}
+    if (leaf) {
+      workspace.revealLeaf(leaf)
+    }
+  }
+
+  addPluginCommands() {
+    this.addCommand({
+      id: 'sync-files',
+      name: 'Sync Files',
+      callback: async () => {
+        const statusModal = new FileStatusModal(this.app, 'Syncing files')
+
+        try {
+          statusModal.open()
+
+          for await (const filename of this.syncFiles.sync()) {
+            console.info(`File synced: ${filename}`)
+
+            statusModal.nowProcessing(filename)
+          }
+        } finally {
+          statusModal.close()
+        }
+      }
+    })
+
+    this.addCommand({
+      id: 'delete-files',
+      name: 'Delete Files',
+      callback: async () => {
+        const statusModal = new FileStatusModal(this.app, 'Deleting files')
+
+        try {
+          statusModal.open()
+
+          for await (const filename of this.syncFiles.deleteRemoteFiles()) {
+            console.info(`File deleted: ${filename}`)
+
+            statusModal.nowProcessing(filename)
+          }
+        } finally {
+          statusModal.close()
+        }
+      }
+    })
+  }
 }

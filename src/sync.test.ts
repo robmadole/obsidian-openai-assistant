@@ -28,8 +28,9 @@ it('sync files', { timeout: 5000 }, async ({ syncFiles, sleep }) => {
     {path: 'Test.md', contents: 'Test files'}
   )
 
-  for await (const file of syncFiles.sync()) {
-    expect(file).toBeTruthy()
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  for await (const _f of syncFiles.sync()) {
+    // noop
   }
 
   await sleep(1000)
